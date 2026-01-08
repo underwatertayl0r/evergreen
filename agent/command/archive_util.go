@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/evergreen-ci/utility"
@@ -21,7 +22,7 @@ func validateRelativePath(filePath, rootPath string) error {
 	if filepath.IsAbs(filePath) {
 		return errors.New("filepath is absolute")
 	}
-	realPath := filepath.Join(rootPath, filePath)
+	joinedPath := filepath.Join(rootPath, filePath)
 	// Generally, paths are resolved before they are passed
 	// to filepath.Rel to prevent tarballs from containing
 	// symlinks to files outside the data directory.
@@ -29,12 +30,26 @@ func validateRelativePath(filePath, rootPath string) error {
 	// is symlinked to another drive so we can't resolve
 	// the symlinks or it will falsely report that the
 	// path is outside the data directory.
+	var realPath string
+	if runtime.GOOS == "windows" {
+		// Preserve existing behavior on Windows: do not resolve symlinks.
+		realPath = joinedPath
+	} else {
+		// On non-Windows platforms, resolve symlinks to prevent paths from
+		// escaping the rootPath via previously extracted links.
+		evaluated, err := filepath.EvalSymlinks(joinedPath)
+		if err != nil {
+			return errors.Wrap(err, "resolving symlinks in path")
+		}
+		realPath = evaluated
+	}
 	relpath, err := filepath.Rel(rootPath, realPath)
 	if err != nil {
 		return errors.Wrap(err, "getting relative path")
 	}
-	if strings.Contains(relpath, "..") {
-		return errors.New("relative path starts with '..'")
+	relpath = filepath.Clean(relpath)
+	if relpath == ".." || strings.HasPrefix(relpath, ".."+string(os.PathSeparator)) {
+		return errors.New("relative path escapes root path")
 	}
 	return nil
 }
